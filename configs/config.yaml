@@ -1,0 +1,19 @@
+api_host: "0.0.0.0"
+api_port: 8000
+debug: true
+
+# Switch to "ollama" once you have `ollama serve` running locally and a
+# model pulled (e.g. `ollama pull llama3.2`).
+llm_provider: "mock"
+ollama_host: "http://localhost:11434"
+ollama_model: "llama3.2"
+llm_timeout_seconds: 30
+
+db_path: "data/sample.db"
+
+max_result_rows: 100
+default_row_limit: 50
+query_timeout_seconds: 5
+
+audit_log_path: "logs/audit.jsonl"
+log_level: "INFO"

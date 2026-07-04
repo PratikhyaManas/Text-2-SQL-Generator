@@ -1,0 +1,55 @@
+[project]
+name = "text2sql-secure"
+version = "0.1.0"
+description = "A safe & secure Text-to-SQL system powered by a local LLM"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "pyyaml>=6.0.1",
+    "sqlglot>=25.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+start-server = "src.main:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.poetry]
+name = "text2sql-secure"
+version = "0.1.0"
+description = "A safe & secure Text-to-SQL system powered by a local LLM"
+authors = ["Your Name <you@example.com>"]
+packages = [{ include = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = ">=0.110.0"
+uvicorn = { extras = ["standard"], version = ">=0.29.0" }
+pydantic = ">=2.6.0"
+pydantic-settings = ">=2.2.0"
+pyyaml = ">=6.0.1"
+sqlglot = ">=25.0.0"
+requests = ">=2.31.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0.0"
+httpx = ">=0.27.0"
+
+[tool.poetry.scripts]
+start-server = "src.main:main"
