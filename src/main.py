@@ -37,6 +37,14 @@ service = TextToSQLService(
     max_result_rows=settings.max_result_rows,
     default_row_limit=settings.default_row_limit,
     query_timeout_seconds=settings.query_timeout_seconds,
+    max_retries=settings.max_retries,
+    row_filters=settings.row_filters,
+    redaction_enabled=settings.redaction_enabled,
+    cache_enabled=settings.cache_enabled,
+    cache_ttl_seconds=settings.cache_ttl_seconds,
+    rate_limit_per_minute=settings.rate_limit_per_minute,
+    conversation_history_limit=settings.conversation_history_limit,
+    include_examples_in_prompt=settings.include_examples_in_prompt,
 )
 
 app = FastAPI(

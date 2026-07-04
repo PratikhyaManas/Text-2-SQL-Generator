@@ -18,7 +18,11 @@ one of these failing to catch an attack doesn't mean the others do too):
      schema we explicitly exposed to the model. This is what stops
      attempts to read `sqlite_master`, hidden tables, or anything
      outside the sanctioned dataset.
-  5. Row-limit enforcement -- a LIMIT clause is injected or clamped so
+  5. Column allow-list     -- specific columns are allowed per table so
+     queries cannot reach sensitive columns like email or password_hash.
+  6. Row filter injection  -- tenant or user filters can be applied to
+     the query automatically, reducing cross-tenant leakage.
+  7. Row-limit enforcement -- a LIMIT clause is injected or clamped so
      a single query can never pull back an unbounded result set.
 
 The validator returns a normalized, re-serialized SQL string (produced
@@ -29,7 +33,7 @@ never part of the parsed AST in the first place.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 import sqlglot
 from sqlglot import exp
@@ -108,6 +112,86 @@ def _ensure_tables_allowed(tables: Set[str], allowed_schema: Dict[str, List[str]
         raise SQLValidationError("Query does not reference any known table")
 
 
+def _ensure_columns_allowed(statement: exp.Expression, allowed_schema: Dict[str, List[str]]) -> None:
+    allowed_columns = {
+        table.lower(): {column.lower() for column in columns}
+        for table, columns in allowed_schema.items()
+    }
+    alias_map = {}
+    for table in statement.find_all(exp.Table):
+        table_name = table.name.lower()
+        alias_map[table_name] = table_name
+        if table.alias:
+            alias_map[table.alias.lower()] = table_name
+
+    for column in statement.find_all(exp.Column):
+        if column.name.lower() == "*":
+            continue
+
+        resolved_table = None
+        if column.table:
+            resolved_table = alias_map.get(column.table.lower())
+        elif len({table.name.lower() for table in statement.find_all(exp.Table)}) == 1:
+            resolved_table = next(iter({table.name.lower() for table in statement.find_all(exp.Table)}))
+
+        if resolved_table is None:
+            raise SQLValidationError(
+                f"Could not resolve the table for column '{column.name}'"
+            )
+
+        if column.name.lower() not in allowed_columns.get(resolved_table, set()):
+            raise SQLValidationError(
+                f"Column '{resolved_table}.{column.name}' is not allowed by the schema"
+            )
+
+
+def _parse_filter_expression(filter_sql: str) -> exp.Expression:
+    if not filter_sql or not filter_sql.strip():
+        raise SQLValidationError("Row filter is empty")
+
+    try:
+        parsed = sqlglot.parse_one(filter_sql, read="sqlite")
+    except Exception as e:
+        raise SQLValidationError(f"Row filter could not be parsed: {e}")
+
+    if parsed is None:
+        raise SQLValidationError("Row filter could not be parsed")
+    return parsed
+
+
+def _inject_row_filters(statement: exp.Select, row_filters: Optional[Dict[str, str]]) -> None:
+    if not row_filters:
+        return
+
+    referenced_tables = {table.name.lower() for table in statement.find_all(exp.Table)}
+    alias_map = {}
+    for table in statement.find_all(exp.Table):
+        if table.alias:
+            alias_map[table.alias.lower()] = table.name.lower()
+
+    combined_filter = None
+    for table_name, filter_sql in row_filters.items():
+        normalized_table = table_name.lower()
+        if normalized_table not in referenced_tables and normalized_table not in alias_map:
+            continue
+        next_filter = _parse_filter_expression(filter_sql)
+        combined_filter = next_filter if combined_filter is None else exp.And(
+            this=combined_filter,
+            expression=next_filter,
+        )
+
+    if combined_filter is None:
+        return
+
+    existing_where = statement.args.get("where")
+    if existing_where is None:
+        statement.set("where", exp.Where(this=combined_filter))
+    else:
+        existing_condition = existing_where.this if isinstance(existing_where, exp.Where) else existing_where
+        combined_where = exp.And(this=existing_condition, expression=combined_filter)
+        statement.set("where", exp.Where(this=combined_where))
+
+
 def _enforce_row_limit(statement: exp.Select, max_rows: int, default_rows: int) -> int:
     existing_limit = statement.args.get("limit")
 
@@ -132,6 +216,7 @@ def validate_sql(
     allowed_schema: Dict[str, List[str]],
     max_rows: int = 100,
     default_rows: int = 50,
+    row_filters: Optional[Dict[str, str]] = None,
 ) -> ValidationResult:
     """
     Run every safety check against a candidate SQL string.
@@ -150,6 +235,8 @@ def validate_sql(
 
     tables = _extract_tables(statement)
     _ensure_tables_allowed(tables, allowed_schema)
+    _ensure_columns_allowed(statement, allowed_schema)
+    _inject_row_filters(statement, row_filters)
 
     limit_applied = _enforce_row_limit(statement, max_rows, default_rows)
 

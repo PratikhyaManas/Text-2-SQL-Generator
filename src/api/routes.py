@@ -1,6 +1,7 @@
 """FastAPI routes: thin HTTP layer over the TextToSQLService."""
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.core.logger import logger
@@ -70,3 +71,48 @@ async def query_route(request: QueryRequest):
 async def audit_route(limit: int = Query(default=20, ge=1, le=200)):
     service = get_service()
     return service.audit_logger.recent(limit=limit)
+
+
+@router.get("/metrics")
+async def metrics_route():
+    service = get_service()
+    return {"status": "ok", "metrics": service.get_metrics()}
+
+
+@router.get("/metrics-text")
+async def metrics_text_route():
+    service = get_service()
+    return {"status": "ok", "content": service.get_metrics_text()}
+
+
+@router.get("/ui", response_class=HTMLResponse)
+async def ui_route():
+    return HTMLResponse(
+        """
+        <html><body style='font-family:Arial,sans-serif;padding:2rem;'>
+            <h2>Text-to-SQL demo</h2>
+            <form id='query-form'>
+                <input name='question' style='width:70%;padding:0.5rem;' placeholder='Ask a question about the data' />
+                <button type='submit'>Ask</button>
+            </form>
+            <pre id='result' style='background:#f4f4f4;padding:1rem;'></pre>
+            <script>
+                document.getElementById('query-form').onsubmit = async (event) => {
+                    event.preventDefault();
+                    const form = new FormData(event.target);
+                    const question = form.get('question');
+                    const response = await fetch('/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question})});
+                    const data = await response.json();
+                    document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+                };
+            </script>
+        </body></html>
+        """
+    )
+
+
+@router.get("/stream")
+async def stream_route():
+    async def generator():
+        yield "data: ready\n\n"
+    return StreamingResponse(generator(), media_type="text/event-stream")

@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     max_result_rows: int = 100
     default_row_limit: int = 50
     query_timeout_seconds: int = 5
+    max_retries: int = 1
+    row_filters: Dict[str, str] = {}
+    redaction_enabled: bool = True
+    cache_enabled: bool = True
+    cache_ttl_seconds: int = 300
+    rate_limit_per_minute: int = 60
+    conversation_history_limit: int = 3
+    include_examples_in_prompt: bool = True
 
     # --- Audit ---
     audit_log_path: str = "logs/audit.jsonl"

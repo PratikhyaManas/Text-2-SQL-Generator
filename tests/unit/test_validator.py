@@ -103,3 +103,19 @@ def test_comment_based_injection_attempt_is_blocked_or_stripped():
             "SELECT * FROM customers; -- DROP TABLE customers",
             SCHEMA,
         )
+
+
+def test_column_level_allow_list_blocks_disallowed_columns():
+    schema = {"customers": ["name"]}
+    with pytest.raises(SQLValidationError):
+        validate_sql("SELECT email FROM customers", schema)
+
+
+def test_row_filter_is_injected_when_requested():
+    result = validate_sql(
+        "SELECT name FROM customers",
+        {"customers": ["name"]},
+        row_filters={"customers": "tenant_id = 1"},
+    )
+    assert "WHERE" in result.safe_sql.upper()
+    assert "TENANT_ID = 1" in result.safe_sql.upper()
