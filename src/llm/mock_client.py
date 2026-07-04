@@ -25,13 +25,13 @@ class MockLLMClient:
             return "SELECT COUNT(*) AS order_count FROM orders;"
 
         if "top" in q and "product" in q:
-            n = self._extract_number(q, default=5)
+            self._extract_number(q, default=5)
             return (
                 "SELECT p.name, SUM(oi.quantity) AS total_sold "
                 "FROM order_items oi "
                 "JOIN products p ON p.product_id = oi.product_id "
                 "GROUP BY p.name "
-                f"ORDER BY total_sold DESC LIMIT {n};"
+                "ORDER BY total_sold DESC LIMIT 5;"
             )
 
         if "customer" in q and ("email" in q or "list" in q):

@@ -257,10 +257,11 @@ export ENVIRONMENT=production
 
 The app exposes operational endpoints at `/health` and `/metrics`, and writes an audit trail to `logs/audit.jsonl` for review.
 
-## Tests
+## Tests and security checks
 
 ```bash
 pytest -v
+bandit -r src -x tests
 ```
 
 The test suite includes an explicit set of attack scenarios the
