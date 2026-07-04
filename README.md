@@ -151,6 +151,82 @@ curl http://localhost:8000/schema
 curl "http://localhost:8000/audit?limit=10"
 ```
 
+### Demo UI
+
+The app also serves a lightweight browser UI at `/ui` with:
+
+- a role-based login picker
+- database selection
+- saved session state in the browser
+- copy SQL and recent history view
+
+## Deployment and operations
+
+### Docker
+
+A simple Docker image is included for containerized deployment.
+
+```bash
+docker build -t text2sql-secure .
+docker run -p 8000:8000 text2sql-secure
+```
+
+### CI/CD
+
+A sample GitHub Actions workflow is included at [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+### Environment-based config
+
+Configuration is loaded from environment variables and [.env.example](.env.example) via Pydantic settings. A production-style template is included with values such as:
+
+```bash
+export LLM_PROVIDER=mock
+export DB_PATH=data/sample.db
+export API_PORT=8000
+export ENVIRONMENT=production
+export LOG_LEVEL=INFO
+```
+
+### Monitoring and logging
+
+The app exposes operational endpoints at `/health` and `/metrics`, writes an audit trail to `logs/audit.jsonl`, and emits structured JSON logs by default. A basic Prometheus/Grafana monitoring stack is available in [docker-compose.monitoring.yml](docker-compose.monitoring.yml) and [monitoring/prometheus.yml](monitoring/prometheus.yml), with a sample Grafana dashboard at [monitoring/grafana-dashboard.json](monitoring/grafana-dashboard.json).
+
+### Run the monitoring stack
+
+```bash
+docker compose -f docker-compose.monitoring.yml up
+```
+
+Then open:
+
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000
+
+## Tests
+
+```bash
+pytest -v
+```
+
+The test suite includes an explicit set of attack scenarios the
+validator must catch: `DROP`/`DELETE`/`UPDATE`/`INSERT`/`ALTER`/`CREATE`,
+`ATTACH DATABASE`, `PRAGMA`, stacked queries, comment-smuggling, queries
+against `sqlite_master` or any table outside the allowed schema, and
+joins that try to pull in a disallowed table.
+
+## Extending
+
+- **New tables/columns**: just add them to the SQLite DB — `get_schema()`
+  introspects at request time, so the prompt and validator's allow-list
+  stay in sync automatically.
+- **A different database engine** (Postgres, MySQL): swap
+  `src/db/executor.py` and `src/db/schema.py`, using a genuinely
+  read-only DB role/user in addition to the validator (defense in depth
+  at the infrastructure layer, not just in application code).
+- **A different local LLM runtime** (llama.cpp server, LM Studio, vLLM):
+  implement a client with the same `generate_sql()` interface as
+  `OllamaClient` and wire it up in `src/main.py::build_llm_client`.
+
 ## Deployment and operations
 
 ### Docker
