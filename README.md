@@ -151,6 +151,36 @@ curl http://localhost:8000/schema
 curl "http://localhost:8000/audit?limit=10"
 ```
 
+## Deployment and operations
+
+### Docker
+
+A simple Docker image is included for containerized deployment.
+
+```bash
+docker build -t text2sql-secure .
+docker run -p 8000:8000 text2sql-secure
+```
+
+### CI/CD
+
+A sample GitHub Actions workflow is included at [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+### Environment-based config
+
+Configuration is loaded from environment variables and [.env](.env) files via Pydantic settings. Set values such as:
+
+```bash
+export LLM_PROVIDER=mock
+export DB_PATH=data/sample.db
+export API_PORT=8000
+export ENVIRONMENT=production
+```
+
+### Monitoring
+
+The app exposes operational endpoints at `/health` and `/metrics`, and writes an audit trail to `logs/audit.jsonl` for review.
+
 ## Tests
 
 ```bash

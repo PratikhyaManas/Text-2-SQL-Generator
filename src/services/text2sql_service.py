@@ -85,7 +85,9 @@ class TextToSQLService:
             "execution_failures": 0,
             "cache_hits": 0,
             "cache_misses": 0,
+            "uptime_seconds": 0,
         }
+        self.started_at = time.monotonic()
         self.cache: Dict[str, Dict[str, Any]] = {}
         self.rate_limit_history: Dict[str, List[float]] = {}
         self.database_paths = database_paths or {}
@@ -105,7 +107,9 @@ class TextToSQLService:
         self.metrics[key] = self.metrics.get(key, 0) + value
 
     def get_metrics(self) -> Dict[str, int]:
-        return dict(self.metrics)
+        metrics = dict(self.metrics)
+        metrics["uptime_seconds"] = int(time.monotonic() - self.started_at)
+        return metrics
 
     def get_metrics_text(self) -> str:
         lines = ["# HELP text2sql_queries_total Total number of queries handled"]

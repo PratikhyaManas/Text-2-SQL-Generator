@@ -17,3 +17,4 @@ query_timeout_seconds: 5
 
 audit_log_path: "logs/audit.jsonl"
 log_level: "INFO"
+environment: "development"

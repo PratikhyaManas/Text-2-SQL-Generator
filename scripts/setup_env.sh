@@ -14,6 +14,20 @@ echo "=============================================="
 
 if [ ! -f ".env" ]; then
     [ -f ".env.example" ] && cp .env.example .env && echo "Created .env from .env.example"
+    if [ ! -f ".env.example" ]; then
+        cat > .env <<'EOF'
+API_HOST=0.0.0.0
+API_PORT=8000
+DEBUG=false
+ENVIRONMENT=production
+LLM_PROVIDER=mock
+DB_PATH=data/sample.db
+AUDIT_LOG_PATH=logs/audit.jsonl
+LOG_LEVEL=INFO
+EOF
+        echo "Created a production-style .env file"
+    fi
+    [ -f ".env.example" ] && cp .env.example .env && echo "Created .env from .env.example"
 else
     echo ".env already exists, leaving it untouched"
 fi

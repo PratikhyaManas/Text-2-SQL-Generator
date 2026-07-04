@@ -1,0 +1,32 @@
+{
+  "title": "Text-to-SQL Secure Dashboard",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Queries Total",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "targets": [{ "expr": "text2sql_queries_total" }]
+    },
+    {
+      "type": "stat",
+      "title": "Successful Queries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "targets": [{ "expr": "text2sql_queries_success" }]
+    },
+    {
+      "type": "stat",
+      "title": "Blocked Queries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "targets": [{ "expr": "text2sql_queries_blocked" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Uptime Seconds",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "targets": [{ "expr": "text2sql_uptime_seconds" }]
+    }
+  ]
+}

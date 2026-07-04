@@ -1,6 +1,9 @@
 import sqlite3
 
+from fastapi.testclient import TestClient
+
 from src.llm.mock_client import MockLLMClient
+from src.main import app
 from src.security.audit import AuditLogger
 from src.services.text2sql_service import TextToSQLService
 
@@ -102,6 +105,19 @@ def test_available_databases_include_default_and_configured_options(sample_db, t
     databases = service.get_available_databases()
     assert databases["default"] == sample_db
     assert databases["alt"] == alt_path
+
+
+def test_health_and_metrics_endpoints_expose_operational_info():
+    client = TestClient(app)
+
+    health_response = client.get("/health")
+    assert health_response.status_code == 200
+    assert health_response.json()["status"] == "ok"
+    assert health_response.json()["service"] == "text2sql-secure"
+
+    metrics_response = client.get("/metrics")
+    assert metrics_response.status_code == 200
+    assert "uptime_seconds" in metrics_response.json()["metrics"]
 
 
 def test_conversation_context_is_kept_per_user(sample_db, tmp_path):

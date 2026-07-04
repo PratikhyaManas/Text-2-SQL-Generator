@@ -41,7 +41,12 @@ def get_service():
 
 @router.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "text2sql-secure",
+        "version": "0.1.0",
+        "environment": "development",
+    }
 
 
 @router.get("/schema")
