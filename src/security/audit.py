@@ -29,6 +29,8 @@ class AuditRecord:
     reason: Optional[str]
     row_count: Optional[int]
     execution_time_ms: Optional[float]
+    user_id: Optional[str] = None
+    database_name: Optional[str] = None
 
 
 class AuditLogger:
@@ -45,6 +47,8 @@ class AuditLogger:
         reason: Optional[str] = None,
         row_count: Optional[int] = None,
         execution_time_ms: Optional[float] = None,
+        user_id: Optional[str] = None,
+        database_name: Optional[str] = None,
     ) -> AuditRecord:
         entry = AuditRecord(
             id=str(uuid.uuid4()),
@@ -56,6 +60,8 @@ class AuditLogger:
             reason=reason,
             row_count=row_count,
             execution_time_ms=execution_time_ms,
+            user_id=user_id,
+            database_name=database_name,
         )
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(asdict(entry)) + "\n")

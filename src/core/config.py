@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # --- Database ---
     db_path: str = "data/sample.db"
+    database_paths: Dict[str, str] = {}
 
     # --- Security / query guardrails ---
     max_result_rows: int = 100

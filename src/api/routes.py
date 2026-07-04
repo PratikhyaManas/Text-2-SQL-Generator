@@ -1,7 +1,7 @@
 """FastAPI routes: thin HTTP layer over the TextToSQLService."""
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from src.core.logger import logger
@@ -11,6 +11,8 @@ router = APIRouter()
 
 class QueryRequest(BaseModel):
     question: str
+    user_id: str | None = None
+    database_name: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -24,6 +26,9 @@ class QueryResponse(BaseModel):
     row_count: int = 0
     truncated: bool = False
     execution_time_ms: float | None = None
+    summary: str | None = None
+    explanation: str | None = None
+    confidence: float | None = None
 
 
 def get_service():
@@ -45,13 +50,19 @@ async def schema_route():
     return service.get_allowed_schema()
 
 
+@router.get("/databases")
+async def databases_route():
+    service = get_service()
+    return {"status": "ok", "databases": service.get_available_databases()}
+
+
 @router.post("/query", response_model=QueryResponse)
 async def query_route(request: QueryRequest):
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
 
     service = get_service()
-    outcome = service.answer(request.question)
+    outcome = service.answer(request.question, user_id=request.user_id, database_name=request.database_name)
 
     return QueryResponse(
         question=outcome.question,
@@ -64,6 +75,9 @@ async def query_route(request: QueryRequest):
         row_count=outcome.row_count,
         truncated=outcome.truncated,
         execution_time_ms=outcome.execution_time_ms,
+        summary=outcome.summary,
+        explanation=outcome.explanation,
+        confidence=outcome.confidence,
     )
 
 
@@ -85,28 +99,168 @@ async def metrics_text_route():
     return {"status": "ok", "content": service.get_metrics_text()}
 
 
+@router.get("/history")
+async def history_route(limit: int = Query(default=20, ge=1, le=200), user_id: str | None = None):
+    service = get_service()
+    return {"status": "ok", "history": service.get_history(limit=limit, user_id=user_id)}
+
+
+@router.get("/history/export")
+async def history_export_route(format: str = Query(default="json"), user_id: str | None = None):
+    service = get_service()
+    payload = service.export_history(format=format, user_id=user_id)
+    media_type = "application/json" if format.lower() == "json" else "text/csv"
+    return Response(content=payload, media_type=media_type)
+
+
 @router.get("/ui", response_class=HTMLResponse)
 async def ui_route():
     return HTMLResponse(
         """
-        <html><body style='font-family:Arial,sans-serif;padding:2rem;'>
-            <h2>Text-to-SQL demo</h2>
-            <form id='query-form'>
-                <input name='question' style='width:70%;padding:0.5rem;' placeholder='Ask a question about the data' />
-                <button type='submit'>Ask</button>
-            </form>
-            <pre id='result' style='background:#f4f4f4;padding:1rem;'></pre>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 0; padding: 2rem; background: #f4f7fb; color: #223; }
+                .card { background: white; border-radius: 12px; padding: 1rem 1.25rem; box-shadow: 0 8px 24px rgba(0,0,0,0.05); }
+                .session-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+                .session-grid label { display:flex; flex-direction:column; gap:0.25rem; font-size:0.95rem; }
+                input, select, button, textarea { padding: 0.7rem; border-radius: 8px; border: 1px solid #c9d3e3; font-size: 0.95rem; }
+                button { background: #2563eb; color: white; border: none; cursor: pointer; }
+                button.secondary { background: #64748b; }
+                .row { display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap; }
+                pre { background:#f8fafc; padding:1rem; border:1px solid #e2e8f0; border-radius:8px; white-space:pre-wrap; }
+                table { width:100%; border-collapse:collapse; }
+                th, td { text-align:left; padding:0.6rem; border-bottom:1px solid #e2e8f0; }
+                .muted { color:#64748b; font-size:0.9rem; }
+            </style>
+        </head>
+        <body>
+            <div class='card'>
+                <h2>Text-to-SQL demo</h2>
+                <p class='muted'>Welcome back. Choose a role, pick a database, and start asking questions.</p>
+                <div class='session-grid'>
+                    <label>Login
+                        <select id='user-select'>
+                            <option value='demo'>demo — Demo user</option>
+                            <option value='analyst'>analyst — Data analyst</option>
+                            <option value='viewer'>viewer — Read-only viewer</option>
+                        </select>
+                    </label>
+                    <label>Database
+                        <select id='database-select'></select>
+                    </label>
+                    <label>Session
+                        <button id='apply-session' type='button'>Save session</button>
+                    </label>
+                </div>
+                <form id='query-form' class='row'>
+                    <textarea name='question' rows='3' style='min-width:60%;flex:1;' placeholder='Ask a question about the data'></textarea>
+                    <button type='submit'>Ask</button>
+                </form>
+                <div style='margin-top:1rem;display:grid;gap:1rem;'>
+                    <div><strong>Explanation</strong><pre id='explanation'></pre></div>
+                    <div><strong>Confidence</strong><pre id='confidence'></pre></div>
+                    <div>
+                        <strong>Generated SQL</strong>
+                        <div class='row' style='margin-top:0.25rem;'>
+                            <pre id='sql' style='flex:1;'></pre>
+                            <button id='copy-sql' class='secondary' type='button'>Copy SQL</button>
+                        </div>
+                    </div>
+                    <div><strong>Result</strong><pre id='result'></pre></div>
+                    <div>
+                        <strong>Recent history</strong>
+                        <div id='history' class='card' style='margin-top:0.5rem;padding:0.5rem;'></div>
+                    </div>
+                </div>
+            </div>
             <script>
+                const storageKey = 'text2sql-session';
+                const userSelect = document.getElementById('user-select');
+                const databaseSelect = document.getElementById('database-select');
+
+                function loadSession() {
+                    const stored = localStorage.getItem(storageKey);
+                    if (!stored) return { userId: 'demo', databaseName: 'default' };
+                    try { return JSON.parse(stored); } catch { return { userId: 'demo', databaseName: 'default' }; }
+                }
+
+                function saveSession(userId, databaseName) {
+                    localStorage.setItem(storageKey, JSON.stringify({ userId, databaseName }));
+                }
+
+                async function loadDatabases() {
+                    const response = await fetch('/databases');
+                    const data = await response.json();
+                    const options = Object.entries(data.databases || {});
+                    databaseSelect.innerHTML = options.map(([name, path]) => `<option value="${name}">${name} (${path})</option>`).join('');
+                    const session = loadSession();
+                    const selectedName = options.some(([name]) => name === session.databaseName) ? session.databaseName : (options[0] ? options[0][0] : 'default');
+                    databaseSelect.value = selectedName;
+                    const storedUser = session.userId || 'demo';
+                    if ([...userSelect.options].some(option => option.value === storedUser)) {
+                        userSelect.value = storedUser;
+                    } else {
+                        userSelect.value = 'demo';
+                    }
+                }
+
+                async function refreshHistory() {
+                    const userId = userSelect.value.trim();
+                    const params = new URLSearchParams({limit: '5'});
+                    if (userId) params.set('user_id', userId);
+                    const response = await fetch(`/history?${params.toString()}`);
+                    const data = await response.json();
+                    const container = document.getElementById('history');
+                    if (!data.history || data.history.length === 0) {
+                        container.innerHTML = '<div style="padding:1rem;">No history yet.</div>';
+                        return;
+                    }
+                    const rows = data.history.map(item => `
+                        <tr>
+                            <td>${(item.question || '').replace(/</g,'&lt;')}</td>
+                            <td>${(item.status || '').replace(/</g,'&lt;')}</td>
+                            <td>${(item.summary || '').replace(/</g,'&lt;')}</td>
+                        </tr>
+                    `).join('');
+                    container.innerHTML = `<table><thead><tr><th>Question</th><th>Status</th><th>Summary</th></tr></thead><tbody>${rows}</tbody></table>`;
+                }
+
+                document.getElementById('apply-session').onclick = () => {
+                    const userId = userSelect.value.trim() || 'demo';
+                    const databaseName = databaseSelect.value || 'default';
+                    saveSession(userId, databaseName);
+                    refreshHistory();
+                };
+
                 document.getElementById('query-form').onsubmit = async (event) => {
                     event.preventDefault();
                     const form = new FormData(event.target);
                     const question = form.get('question');
-                    const response = await fetch('/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question})});
+                    const userId = userSelect.value.trim() || 'demo';
+                    const databaseName = databaseSelect.value || 'default';
+                    saveSession(userId, databaseName);
+                    const response = await fetch('/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question, user_id: userId, database_name: databaseName})});
                     const data = await response.json();
-                    document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+                    document.getElementById('explanation').textContent = data.explanation || '';
+                    document.getElementById('confidence').textContent = data.confidence ?? 'n/a';
+                    document.getElementById('sql').textContent = data.safe_sql || data.generated_sql || '';
+                    document.getElementById('result').textContent = JSON.stringify({status: data.status, rows: data.rows, rowCount: data.row_count, summary: data.summary}, null, 2);
+                    await refreshHistory();
                 };
+
+                document.getElementById('copy-sql').onclick = async () => {
+                    const sql = document.getElementById('sql').textContent;
+                    if (!sql) return;
+                    await navigator.clipboard.writeText(sql);
+                    document.getElementById('copy-sql').textContent = 'Copied!';
+                    setTimeout(() => document.getElementById('copy-sql').textContent = 'Copy SQL', 1200);
+                };
+
+                loadDatabases().then(refreshHistory);
             </script>
-        </body></html>
+        </body>
+        </html>
         """
     )
 

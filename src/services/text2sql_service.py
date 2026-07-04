@@ -8,6 +8,7 @@ errored) is written to the audit trail, regardless of outcome.
 """
 
 import copy
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -33,6 +34,8 @@ class QueryOutcome:
     truncated: bool = False
     execution_time_ms: Optional[float] = None
     summary: Optional[str] = None
+    explanation: Optional[str] = None
+    confidence: Optional[float] = None
 
 
 class RateLimitExceededError(Exception):
@@ -56,6 +59,7 @@ class TextToSQLService:
         rate_limit_per_minute: int = 60,
         conversation_history_limit: int = 3,
         include_examples_in_prompt: bool = True,
+        database_paths: Optional[Dict[str, str]] = None,
     ):
         self.llm_client = llm_client
         self.db_path = db_path
@@ -84,10 +88,18 @@ class TextToSQLService:
         }
         self.cache: Dict[str, Dict[str, Any]] = {}
         self.rate_limit_history: Dict[str, List[float]] = {}
-        self.conversation_history: List[Dict[str, str]] = []
+        self.database_paths = database_paths or {}
+        self.conversation_history: Dict[str, List[Dict[str, str]]] = {}
+        self.history: List[Dict[str, Any]] = []
+        self.user_histories: Dict[str, List[Dict[str, Any]]] = {}
 
-    def get_allowed_schema(self) -> Dict[str, List[str]]:
-        return get_schema(self.db_path)
+    def get_allowed_schema(self, db_path: Optional[str] = None) -> Dict[str, List[str]]:
+        return get_schema(db_path or self.db_path)
+
+    def get_available_databases(self) -> Dict[str, str]:
+        databases = {"default": self.db_path}
+        databases.update(self.database_paths)
+        return databases
 
     def _record_metric(self, key: str, value: int = 1) -> None:
         self.metrics[key] = self.metrics.get(key, 0) + value
@@ -113,7 +125,32 @@ class TextToSQLService:
         recent.append(now)
         self.rate_limit_history[user_id] = recent
 
-    def _build_prompt_question(self, question: str) -> str:
+    def _normalize_user_id(self, user_id: Optional[str]) -> str:
+        return (user_id or "anonymous").strip() or "anonymous"
+
+    def _resolve_database_path(self, database_name: Optional[str]) -> str:
+        if not database_name:
+            return self.db_path
+
+        if database_name in self.database_paths:
+            return self.database_paths[database_name]
+
+        if os.path.exists(database_name):
+            return database_name
+
+        candidate = os.path.abspath(os.path.join(os.path.dirname(self.db_path), f"{database_name}.db"))
+        if os.path.exists(candidate):
+            return candidate
+
+        return self.db_path
+
+    def _get_user_conversation_history(self, user_id: Optional[str]) -> List[Dict[str, str]]:
+        normalized_user = self._normalize_user_id(user_id)
+        if normalized_user not in self.conversation_history:
+            self.conversation_history[normalized_user] = []
+        return self.conversation_history[normalized_user]
+
+    def _build_prompt_question(self, question: str, user_id: Optional[str] = None) -> str:
         lowered = question.lower()
         if any(token in lowered for token in ["drop", "delete", "update", "insert", "alter", "create", "attach", "pragma"]):
             return question
@@ -122,7 +159,7 @@ class TextToSQLService:
             return question
 
         context_lines = []
-        for item in self.conversation_history[-self.conversation_history_limit:]:
+        for item in self._get_user_conversation_history(user_id)[-self.conversation_history_limit:]:
             context_lines.append(f"Q: {item['question']}\nA: {item['answer']}")
 
         if not context_lines:
@@ -165,15 +202,71 @@ class TextToSQLService:
             return f"The result is {values}."
         return f"Returned {row_count} row(s) with columns {', '.join(columns)}."
 
-    def answer(self, question: str, user_id: Optional[str] = None) -> QueryOutcome:
+    def _build_explanation(self, status: str, generated_sql: Optional[str], safe_sql: Optional[str], reason: Optional[str]) -> Optional[str]:
+        if status == "success":
+            return (
+                f"The query was validated and executed safely. "
+                f"Generated SQL: {safe_sql or generated_sql}"
+            )
+        if status == "blocked":
+            return f"The query was blocked by the validator: {reason}"
+        return f"The query could not be completed: {reason}"
+
+    def _build_confidence(self, status: str, generated_sql: Optional[str], safe_sql: Optional[str]) -> float:
+        if status != "success":
+            return 0.0
+        if not generated_sql:
+            return 0.1
+        if safe_sql and safe_sql.lower() != generated_sql.lower():
+            return 0.9
+        return 0.8
+
+    def get_history(self, limit: int = 20, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        if user_id is not None:
+            normalized_user = self._normalize_user_id(user_id)
+            return list(self.user_histories.get(normalized_user, [])[-limit:])
+        return list(self.history[-limit:])
+
+    def export_history(self, format: str = "json", user_id: Optional[str] = None) -> str:
+        history = self.get_history(limit=1000, user_id=user_id)
+        if format.lower() == "csv":
+            headers = ["question", "status", "safe_sql", "summary", "explanation", "confidence"]
+            rows = []
+            for item in history:
+                rows.append(
+                    [
+                        item.get("question", ""),
+                        item.get("status", ""),
+                        item.get("safe_sql", ""),
+                        item.get("summary", ""),
+                        item.get("explanation", ""),
+                        item.get("confidence", ""),
+                    ]
+                )
+            import csv
+            import io
+
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(headers)
+            writer.writerows(rows)
+            return output.getvalue()
+
+        import json
+
+        return json.dumps(history, indent=2, default=str)
+
+    def answer(self, question: str, user_id: Optional[str] = None, database_name: Optional[str] = None) -> QueryOutcome:
         self._record_metric("queries_total")
+        normalized_user = self._normalize_user_id(user_id)
+        resolved_db_path = self._resolve_database_path(database_name)
         try:
-            self._check_rate_limit(user_id)
+            self._check_rate_limit(normalized_user)
         except RateLimitExceededError as exc:
             self._record_metric("queries_blocked")
             return QueryOutcome(question=question, status="blocked", reason=str(exc))
 
-        cache_key = question.strip().lower()
+        cache_key = f"{question.strip().lower()}::{normalized_user}::{database_name or resolved_db_path}"
         if self.cache_enabled and cache_key in self.cache:
             cached = self.cache[cache_key]
             if time.monotonic() - cached["timestamp"] < self.cache_ttl_seconds:
@@ -183,9 +276,9 @@ class TextToSQLService:
                 return cached_outcome
 
         self._record_metric("cache_misses")
-        schema = self.get_allowed_schema()
+        schema = self.get_allowed_schema(resolved_db_path)
         schema_text = format_schema_for_prompt(schema)
-        prompt_question = self._build_prompt_question(question)
+        prompt_question = self._build_prompt_question(question, user_id=normalized_user)
 
         for attempt in range(self.max_retries + 1):
             logger.info(f"Generating SQL for question: {prompt_question!r}")
@@ -201,6 +294,8 @@ class TextToSQLService:
                     safe_sql=None,
                     status="error",
                     reason=f"LLM generation failed: {e}",
+                    user_id=normalized_user,
+                    database_name=database_name,
                 )
                 return QueryOutcome(question=question, status="error", reason=str(e))
 
@@ -227,17 +322,36 @@ class TextToSQLService:
                     safe_sql=None,
                     status="blocked",
                     reason=str(e),
+                    user_id=normalized_user,
+                    database_name=database_name,
                 )
+                explanation = self._build_explanation("blocked", generated_sql, None, str(e))
+                confidence = self._build_confidence("blocked", generated_sql, None)
+                entry = {
+                    "question": question,
+                    "status": "blocked",
+                    "generated_sql": generated_sql,
+                    "safe_sql": None,
+                    "summary": None,
+                    "explanation": explanation,
+                    "confidence": confidence,
+                    "user_id": normalized_user,
+                    "database_name": database_name,
+                }
+                self.history.append(entry)
+                self.user_histories.setdefault(normalized_user, []).append(entry)
                 return QueryOutcome(
                     question=question,
                     status="blocked",
                     generated_sql=generated_sql,
                     reason=str(e),
+                    explanation=explanation,
+                    confidence=confidence,
                 )
 
             try:
                 exec_result = execute_readonly(
-                    self.db_path,
+                    resolved_db_path,
                     result.safe_sql,
                     max_rows=self.max_result_rows,
                     timeout_seconds=self.query_timeout_seconds,
@@ -255,13 +369,32 @@ class TextToSQLService:
                     safe_sql=result.safe_sql,
                     status="error",
                     reason=str(e),
+                    user_id=normalized_user,
+                    database_name=database_name,
                 )
+                explanation = self._build_explanation("error", generated_sql, result.safe_sql, str(e))
+                confidence = self._build_confidence("error", generated_sql, result.safe_sql)
+                entry = {
+                    "question": question,
+                    "status": "error",
+                    "generated_sql": generated_sql,
+                    "safe_sql": result.safe_sql,
+                    "summary": None,
+                    "explanation": explanation,
+                    "confidence": confidence,
+                    "user_id": normalized_user,
+                    "database_name": database_name,
+                }
+                self.history.append(entry)
+                self.user_histories.setdefault(normalized_user, []).append(entry)
                 return QueryOutcome(
                     question=question,
                     status="error",
                     generated_sql=generated_sql,
                     safe_sql=result.safe_sql,
                     reason=str(e),
+                    explanation=explanation,
+                    confidence=confidence,
                 )
 
             redacted_rows = self._redact_rows(exec_result.rows)
@@ -274,10 +407,15 @@ class TextToSQLService:
                 status="success",
                 row_count=exec_result.row_count,
                 execution_time_ms=exec_result.execution_time_ms,
+                user_id=normalized_user,
+                database_name=database_name,
             )
-            self.conversation_history.append({"question": question, "answer": summary or "Done"})
-            self.conversation_history = self.conversation_history[-self.conversation_history_limit:]
+            user_conversation = self._get_user_conversation_history(normalized_user)
+            user_conversation.append({"question": question, "answer": summary or "Done"})
+            self.conversation_history[normalized_user] = user_conversation[-self.conversation_history_limit:]
 
+            explanation = self._build_explanation("success", generated_sql, result.safe_sql, None)
+            confidence = self._build_confidence("success", generated_sql, result.safe_sql)
             outcome = QueryOutcome(
                 question=question,
                 status="success",
@@ -289,7 +427,22 @@ class TextToSQLService:
                 truncated=exec_result.truncated,
                 execution_time_ms=exec_result.execution_time_ms,
                 summary=summary,
+                explanation=explanation,
+                confidence=confidence,
             )
+            entry = {
+                "question": question,
+                "status": outcome.status,
+                "generated_sql": outcome.generated_sql,
+                "safe_sql": outcome.safe_sql,
+                "summary": outcome.summary,
+                "explanation": outcome.explanation,
+                "confidence": outcome.confidence,
+                "user_id": normalized_user,
+                "database_name": database_name,
+            }
+            self.history.append(entry)
+            self.user_histories.setdefault(normalized_user, []).append(entry)
 
             if self.cache_enabled:
                 self.cache[cache_key] = {"timestamp": time.monotonic(), "outcome": copy.deepcopy(outcome)}

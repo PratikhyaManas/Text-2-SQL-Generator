@@ -39,6 +39,7 @@ service = TextToSQLService(
     query_timeout_seconds=settings.query_timeout_seconds,
     max_retries=settings.max_retries,
     row_filters=settings.row_filters,
+    database_paths=settings.database_paths,
     redaction_enabled=settings.redaction_enabled,
     cache_enabled=settings.cache_enabled,
     cache_ttl_seconds=settings.cache_ttl_seconds,
