@@ -1,4 +1,4 @@
-# text2sql-secure
+# text2sql-generator
 
 A production-style **Safe & Secure Text-to-SQL system** powered by a local
 LLM. Natural language goes in, SQL comes out — but nothing touches your
@@ -26,7 +26,7 @@ Runs entirely on your machine. No data or schema ever leaves it.
 ## Architecture
 
 ```
-text2sql-secure/
+text2sql-generator/
 │
 ├── src/
 │   ├── core/            # config.py (layered settings), logger.py
