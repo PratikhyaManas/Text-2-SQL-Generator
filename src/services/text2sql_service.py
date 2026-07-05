@@ -37,6 +37,8 @@ class QueryOutcome:
     summary: Optional[str] = None
     explanation: Optional[str] = None
     confidence: Optional[float] = None
+    result_warnings: List[str] = field(default_factory=list)
+    stats: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -48,6 +50,18 @@ class QueryPreview:
     reason: Optional[str] = None
     plan_rows: List[List[Any]] = field(default_factory=list)
     plan_warnings: List[str] = field(default_factory=list)
+    confidence: Optional[float] = None
+    confidence_band: Optional[str] = None
+    auto_blocked: bool = False
+
+
+@dataclass
+class ClarificationOutcome:
+    question: str
+    status: str  # "needs_clarification" | "ready"
+    clarification_questions: List[str] = field(default_factory=list)
+    safe_sql: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class RateLimitExceededError(Exception):
@@ -312,6 +326,106 @@ class TextToSQLService:
             return 0.9
         return 0.8
 
+    @staticmethod
+    def _build_result_quality(columns: List[str], rows: List[List[Any]], row_count: int, truncated: bool) -> tuple[List[str], Dict[str, Any]]:
+        warnings: List[str] = []
+        column_count = len(columns)
+        displayed_rows = len(rows)
+
+        if row_count == 0:
+            warnings.append("No rows were returned for this query.")
+        if truncated:
+            warnings.append("Results were truncated to the configured row limit.")
+        if column_count >= 12:
+            warnings.append("Result has many columns. Consider selecting only key fields.")
+
+        total_cells = max(displayed_rows * max(column_count, 1), 1)
+        null_cells = 0
+        for row in rows:
+            for value in row[:column_count]:
+                if value is None:
+                    null_cells += 1
+
+        null_ratio_overall = round(null_cells / total_cells, 3)
+        if displayed_rows > 0 and null_ratio_overall >= 0.5:
+            warnings.append("Result contains a high share of null values.")
+
+        stats: Dict[str, Any] = {
+            "returned_rows": row_count,
+            "displayed_rows": displayed_rows,
+            "column_count": column_count,
+            "null_ratio_overall": null_ratio_overall,
+        }
+        return warnings, stats
+
+    @staticmethod
+    def _confidence_band(confidence: Optional[float]) -> Optional[str]:
+        if confidence is None:
+            return None
+        if confidence >= 0.85:
+            return "high"
+        if confidence >= 0.6:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _needs_clarification(question: str) -> List[str]:
+        text = question.lower()
+        if not text.strip():
+            return []
+
+        ambiguous_signals = ["best", "top", "latest", "trend", "performance", "growth"]
+        has_ambiguous_word = any(token in text for token in ambiguous_signals)
+        has_metric_hint = any(token in text for token in ["revenue", "quantity", "count", "sold", "sales"])
+        has_time_hint = any(
+            token in text
+            for token in [
+                "today",
+                "yesterday",
+                "week",
+                "month",
+                "quarter",
+                "year",
+                "last",
+                "between",
+                "from",
+                "to",
+            ]
+        )
+
+        needs_metric = has_ambiguous_word and not has_metric_hint
+        needs_timeframe = has_ambiguous_word and not has_time_hint
+
+        questions: List[str] = []
+        if needs_timeframe:
+            questions.append("Which time range should I use (for example: last 30 days, last quarter)?")
+        if needs_metric:
+            questions.append("How should I measure this (for example: revenue, quantity sold, or count)?")
+        return questions
+
+    def clarify(
+        self,
+        question: str,
+        user_id: Optional[str] = None,
+        database_name: Optional[str] = None,
+    ) -> ClarificationOutcome:
+        clarification_questions = self._needs_clarification(question)
+        if clarification_questions:
+            return ClarificationOutcome(
+                question=question,
+                status="needs_clarification",
+                clarification_questions=clarification_questions,
+                reason="Question is ambiguous and needs clarification before SQL generation.",
+            )
+
+        preview = self.preview(question, user_id=user_id, database_name=database_name)
+        return ClarificationOutcome(
+            question=question,
+            status="ready",
+            safe_sql=preview.safe_sql,
+            reason=preview.reason,
+        )
+
     def get_history(self, limit: int = 20, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         if user_id is not None:
             normalized_user = self._normalize_user_id(user_id)
@@ -349,6 +463,17 @@ class TextToSQLService:
 
     def preview(self, question: str, user_id: Optional[str] = None, database_name: Optional[str] = None) -> QueryPreview:
         normalized_user = self._normalize_user_id(user_id)
+        clarification_questions = self._needs_clarification(question)
+        if clarification_questions:
+            return QueryPreview(
+                question=question,
+                status="blocked",
+                reason="Low confidence due to ambiguous question. Clarification required.",
+                confidence=0.4,
+                confidence_band="low",
+                auto_blocked=True,
+            )
+
         resolved_db_path = self._resolve_database_path(database_name)
         schema = self.get_allowed_schema(resolved_db_path)
         schema_text = format_schema_for_prompt(schema)
@@ -358,7 +483,14 @@ class TextToSQLService:
             generated_sql = self.llm_client.generate_sql(prompt_question, schema_text)
             self._record_metric("llm_calls")
         except Exception as e:
-            return QueryPreview(question=question, status="error", reason=f"LLM generation failed: {e}")
+            return QueryPreview(
+                question=question,
+                status="error",
+                reason=f"LLM generation failed: {e}",
+                confidence=0.0,
+                confidence_band="low",
+                auto_blocked=True,
+            )
 
         try:
             validated = validate_sql(
@@ -375,6 +507,9 @@ class TextToSQLService:
                 status="blocked",
                 generated_sql=generated_sql,
                 reason=str(e),
+                confidence=0.0,
+                confidence_band="low",
+                auto_blocked=True,
             )
 
         try:
@@ -390,15 +525,29 @@ class TextToSQLService:
                 generated_sql=generated_sql,
                 safe_sql=validated.safe_sql,
                 reason=f"EXPLAIN failed: {e}",
+                confidence=0.2,
+                confidence_band="low",
+                auto_blocked=True,
             )
+
+        preview_confidence = 0.9 if validated.safe_sql and validated.safe_sql.lower() != generated_sql.lower() else 0.8
+        preview_band = self._confidence_band(preview_confidence)
+        auto_blocked = preview_band == "low"
+        preview_reason = None
+        if auto_blocked:
+            preview_reason = "Low confidence query preview. Please clarify your question."
 
         return QueryPreview(
             question=question,
             status="ready",
             generated_sql=generated_sql,
             safe_sql=validated.safe_sql,
+            reason=preview_reason,
             plan_rows=explain.plan_rows,
             plan_warnings=explain.warnings,
+            confidence=preview_confidence,
+            confidence_band=preview_band,
+            auto_blocked=auto_blocked,
         )
 
     def execute_approved(
@@ -491,6 +640,12 @@ class TextToSQLService:
 
         explanation = self._build_explanation("success", safe_sql, validated.safe_sql, None)
         confidence = self._build_confidence("success", safe_sql, validated.safe_sql)
+        result_warnings, stats = self._build_result_quality(
+            exec_result.columns,
+            redacted_rows,
+            exec_result.row_count,
+            exec_result.truncated,
+        )
         outcome = QueryOutcome(
             question=question,
             status="success",
@@ -504,6 +659,8 @@ class TextToSQLService:
             summary=summary,
             explanation=explanation,
             confidence=confidence,
+            result_warnings=result_warnings,
+            stats=stats,
         )
 
         entry = {
@@ -695,6 +852,12 @@ class TextToSQLService:
 
             explanation = self._build_explanation("success", generated_sql, result.safe_sql, None)
             confidence = self._build_confidence("success", generated_sql, result.safe_sql)
+            result_warnings, stats = self._build_result_quality(
+                exec_result.columns,
+                redacted_rows,
+                exec_result.row_count,
+                exec_result.truncated,
+            )
             outcome = QueryOutcome(
                 question=question,
                 status="success",
@@ -708,6 +871,8 @@ class TextToSQLService:
                 summary=summary,
                 explanation=explanation,
                 confidence=confidence,
+                result_warnings=result_warnings,
+                stats=stats,
             )
             entry = {
                 "question": question,

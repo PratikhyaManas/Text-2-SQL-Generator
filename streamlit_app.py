@@ -76,6 +76,17 @@ def preview_question(api_base_url: str, question: str, user_id: str, database_na
     return response.json()
 
 
+def clarify_question(api_base_url: str, question: str, user_id: str, database_name: str) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "question": question,
+        "user_id": user_id.strip() or None,
+        "database_name": database_name,
+    }
+    response = requests.post(f"{api_base_url}/query/clarify", json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
 def execute_approved_question(
     api_base_url: str,
     question: str,
@@ -184,6 +195,8 @@ def main() -> None:
         st.session_state["latest_result"] = None
     if "pending_approval" not in st.session_state:
         st.session_state["pending_approval"] = None
+    if "latest_clarification" not in st.session_state:
+        st.session_state["latest_clarification"] = None
     if "question_input" not in st.session_state:
         st.session_state["question_input"] = ""
 
@@ -255,10 +268,20 @@ def main() -> None:
             st.warning("Please enter a question before running the query.")
         else:
             try:
+                clarification = clarify_question(api_base_url, question, user_id, selected_database)
+                st.session_state["latest_clarification"] = clarification
+
+                if clarification.get("status") == "needs_clarification":
+                    st.session_state["latest_preview"] = None
+                    st.session_state["latest_result"] = None
+                    st.session_state["pending_approval"] = None
+                    st.warning(ui_text("Question needs clarification before SQL generation.", "⚠️"))
+                    st.rerun()
+
                 preview = preview_question(api_base_url, question, user_id, selected_database)
                 st.session_state["latest_preview"] = preview
 
-                if preview.get("status") != "ready":
+                if preview.get("status") != "ready" or preview.get("auto_blocked"):
                     st.session_state["latest_result"] = None
                     st.session_state["pending_approval"] = None
                 elif require_approval:
@@ -290,10 +313,51 @@ def main() -> None:
             except requests.RequestException as exc:
                 st.error(f"{ui_text('Query failed:', '❌')} {exc}")
 
+    clarification = st.session_state.get("latest_clarification")
+    if clarification and clarification.get("status") == "needs_clarification":
+        st.subheader(ui_text("Clarification Needed", "🧩"))
+        st.write(clarification.get("reason") or "Please answer the following questions.")
+
+        clarification_questions = clarification.get("clarification_questions", [])
+        clarification_answers: List[str] = []
+        for index, prompt in enumerate(clarification_questions):
+            answer = st.text_input(prompt, key=f"clarification_answer_{index}")
+            clarification_answers.append(answer.strip())
+
+        if st.button(ui_text("Apply Clarifications and Continue", "➡️"), use_container_width=True):
+            if not all(clarification_answers):
+                st.warning(ui_text("Please answer all clarification prompts.", "⚠️"))
+            else:
+                base_question = st.session_state.get("question_input", "").strip()
+                clarification_block = "\n".join(
+                    [
+                        f"- {q} {a}"
+                        for q, a in zip(clarification_questions, clarification_answers)
+                    ]
+                )
+                clarified_question = f"{base_question}\nClarifications:\n{clarification_block}".strip()
+                st.session_state["question_input"] = clarified_question
+                st.session_state["latest_clarification"] = None
+                st.success(ui_text("Clarifications applied. Run query again.", "✅"))
+
     preview = st.session_state.get("latest_preview")
     if preview:
         st.subheader(ui_text("Preview", "🔍"))
         st.write(f"{ui_text('Status:', '📌')} {preview.get('status', 'unknown')}")
+
+        preview_confidence = preview.get("confidence")
+        confidence_band = preview.get("confidence_band")
+        if preview_confidence is not None:
+            if confidence_band == "high":
+                st.success(f"{ui_text('Confidence:', '🎯')} {preview_confidence} ({confidence_band})")
+            elif confidence_band == "medium":
+                st.warning(f"{ui_text('Confidence:', '🎯')} {preview_confidence} ({confidence_band})")
+            else:
+                st.error(f"{ui_text('Confidence:', '🎯')} {preview_confidence} ({confidence_band or 'low'})")
+
+        if preview.get("auto_blocked"):
+            st.error(ui_text("This query is auto-blocked due to low confidence. Refine the question.", "⛔"))
+
         sql_text = preview.get("safe_sql") or preview.get("generated_sql")
         if sql_text:
             st.code(sql_text, language="sql")
@@ -355,6 +419,24 @@ def main() -> None:
         summary = result.get("summary")
         if summary:
             st.success(f"{ui_text('', '✅')}{' ' if ICON_STYLE == 'expressive' else ''}{summary}")
+
+        result_warnings = result.get("result_warnings", [])
+        if result_warnings:
+            st.warning(ui_text("Result quality warnings:", "⚠️") + "\n- " + "\n- ".join(result_warnings))
+
+        stats = result.get("stats", {})
+        if stats:
+            st.info(
+                " ".join(
+                    [
+                        ui_text("Stats:", "📐"),
+                        f"returned={stats.get('returned_rows', 0)}",
+                        f"displayed={stats.get('displayed_rows', 0)}",
+                        f"columns={stats.get('column_count', 0)}",
+                        f"null_ratio={stats.get('null_ratio_overall', 0)}",
+                    ]
+                )
+            )
 
         columns = result.get("columns", [])
         rows = result.get("rows", [])

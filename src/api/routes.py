@@ -38,6 +38,8 @@ class QueryResponse(BaseModel):
     summary: str | None = None
     explanation: str | None = None
     confidence: float | None = None
+    result_warnings: list[str] = Field(default_factory=list)
+    stats: dict = Field(default_factory=dict)
 
 
 class QueryPreviewResponse(BaseModel):
@@ -48,6 +50,17 @@ class QueryPreviewResponse(BaseModel):
     reason: str | None = None
     plan_rows: list[list] = Field(default_factory=list)
     plan_warnings: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+    confidence_band: str | None = None
+    auto_blocked: bool = False
+
+
+class QueryClarifyResponse(BaseModel):
+    question: str
+    status: str
+    clarification_questions: list[str] = Field(default_factory=list)
+    safe_sql: str | None = None
+    reason: str | None = None
 
 
 def get_service():
@@ -102,6 +115,8 @@ async def query_route(request: QueryRequest):
         summary=outcome.summary,
         explanation=outcome.explanation,
         confidence=outcome.confidence,
+        result_warnings=outcome.result_warnings,
+        stats=outcome.stats,
     )
 
 
@@ -134,6 +149,8 @@ async def query_approved_route(request: QueryApprovalRequest):
         summary=outcome.summary,
         explanation=outcome.explanation,
         confidence=outcome.confidence,
+        result_warnings=outcome.result_warnings,
+        stats=outcome.stats,
     )
 
 
@@ -153,6 +170,26 @@ async def query_preview_route(request: QueryRequest):
         reason=preview.reason,
         plan_rows=preview.plan_rows,
         plan_warnings=preview.plan_warnings,
+        confidence=preview.confidence,
+        confidence_band=preview.confidence_band,
+        auto_blocked=preview.auto_blocked,
+    )
+
+
+@router.post("/query/clarify", response_model=QueryClarifyResponse)
+async def query_clarify_route(request: QueryRequest):
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be empty")
+
+    service = get_service()
+    clarification = service.clarify(request.question, user_id=request.user_id, database_name=request.database_name)
+
+    return QueryClarifyResponse(
+        question=clarification.question,
+        status=clarification.status,
+        clarification_questions=clarification.clarification_questions,
+        safe_sql=clarification.safe_sql,
+        reason=clarification.reason,
     )
 
 
