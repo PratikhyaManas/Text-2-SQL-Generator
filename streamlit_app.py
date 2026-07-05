@@ -12,6 +12,21 @@ import streamlit as st  # type: ignore[import-not-found]
 DEFAULT_API_BASE_URL = os.getenv("TEXT2SQL_API_BASE_URL", "http://localhost:8000")
 SAVED_QUERIES_PATH = Path(".saved_queries.json")
 
+# Set to "minimal" to remove icons globally, or "expressive" to enable them.
+ICON_STYLE = "expressive"
+
+
+def ui_text(text: str, icon: str = "") -> str:
+    if ICON_STYLE == "expressive" and icon:
+        return f"{icon} {text}"
+    return text
+
+
+def ui_stage(stage: str) -> str:
+    if ICON_STYLE == "expressive":
+        return f"➡️ {stage}"
+    return stage
+
 
 @st.cache_data(ttl=30)
 def fetch_databases(api_base_url: str) -> Dict[str, str]:
@@ -158,7 +173,8 @@ def render_result_table(columns: List[str], rows: List[List[Any]]) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Text2SQL Frontend", layout="wide")
+    page_icon = "🧾" if ICON_STYLE == "expressive" else None
+    st.set_page_config(page_title="Text2SQL Frontend", page_icon=page_icon, layout="wide")
 
     if "saved_queries" not in st.session_state:
         st.session_state["saved_queries"] = load_saved_queries()
@@ -171,29 +187,29 @@ def main() -> None:
     if "question_input" not in st.session_state:
         st.session_state["question_input"] = ""
 
-    st.title("Secure Text-to-SQL")
+    st.title(ui_text("Secure Text-to-SQL", "🛡️"))
     st.caption("Standalone Streamlit frontend for the existing FastAPI backend.")
 
     with st.sidebar:
-        st.header("Connection")
-        api_base_url = st.text_input("API base URL", value=DEFAULT_API_BASE_URL)
-        user_id = st.text_input("User ID", value="demo")
-        require_approval = st.toggle("Require query approval", value=True)
-        use_streaming = st.toggle("Streaming query progress", value=True)
-        history_limit = st.slider("History limit", min_value=5, max_value=50, value=10, step=5)
+        st.header(ui_text("Connection", "🔌"))
+        api_base_url = st.text_input(ui_text("API base URL", "🌐"), value=DEFAULT_API_BASE_URL)
+        user_id = st.text_input(ui_text("User ID", "👤"), value="demo")
+        require_approval = st.toggle(ui_text("Require query approval", "✅"), value=True)
+        use_streaming = st.toggle(ui_text("Streaming query progress", "⚡"), value=True)
+        history_limit = st.slider(ui_text("History limit", "📈"), min_value=5, max_value=50, value=10, step=5)
 
-        st.header("Saved Queries")
+        st.header(ui_text("Saved Queries", "💾"))
         saved_items: List[Dict[str, str]] = st.session_state["saved_queries"]
         saved_names = [item.get("name", "unnamed") for item in saved_items]
-        selected_saved = st.selectbox("Saved query", options=["(none)"] + saved_names, index=0)
-        if st.button("Load saved query", use_container_width=True):
+        selected_saved = st.selectbox(ui_text("Saved query", "🗂️"), options=["(none)"] + saved_names, index=0)
+        if st.button(ui_text("Load saved query", "📂"), use_container_width=True):
             if selected_saved != "(none)":
                 selected_item = next((item for item in saved_items if item.get("name") == selected_saved), None)
                 if selected_item:
                     st.session_state["question_input"] = selected_item.get("question", "")
 
-        st.header("Schema")
-        if st.button("Refresh schema", use_container_width=True):
+        st.header(ui_text("Schema", "🧠"))
+        if st.button(ui_text("Refresh schema", "🔄"), use_container_width=True):
             fetch_schema.clear()
             fetch_databases.clear()
 
@@ -204,19 +220,19 @@ def main() -> None:
         st.error(f"Could not load databases from API: {exc}")
 
     database_names = list(databases.keys()) or ["default"]
-    selected_database = st.selectbox("Database", options=database_names, index=0)
+    selected_database = st.selectbox(ui_text("Database", "🛢️"), options=database_names, index=0)
     if selected_database in databases:
         st.caption(f"Selected database path: {databases[selected_database]}")
 
     question = st.text_area(
-        "Question",
+        ui_text("Question", "❓"),
         placeholder="Ask a question about the data, for example: top 3 products by quantity sold",
         height=120,
         key="question_input",
     )
 
-    save_name = st.text_input("Save current question as", value="")
-    if st.button("Save Query"):
+    save_name = st.text_input(ui_text("Save current question as", "🏷️"), value="")
+    if st.button(ui_text("Save Query", "💾")):
         if not save_name.strip() or not question.strip():
             st.warning("Enter both a query name and question to save.")
         else:
@@ -230,9 +246,9 @@ def main() -> None:
             )
             st.session_state["saved_queries"] = saved_items
             persist_saved_queries(saved_items)
-            st.success("Query saved.")
+            st.success(ui_text("Query saved.", "✅"))
 
-    submit = st.button("Run Query", type="primary", use_container_width=True)
+    submit = st.button(ui_text("Run Query", "🚀"), type="primary", use_container_width=True)
 
     if submit:
         if not question.strip():
@@ -254,13 +270,13 @@ def main() -> None:
                     st.session_state["latest_result"] = None
                 else:
                     if use_streaming:
-                        with st.status("Running query", expanded=True) as status:
+                        with st.status(ui_text("Running query", "⚙️"), expanded=True) as status:
                             result, stages = ask_question_stream(api_base_url, question, user_id, selected_database)
                             if not stages:
-                                status.write("working")
+                                status.write(ui_text("working", "⏳"))
                             for stage in stages:
-                                status.write(stage)
-                            status.update(label="Query finished", state="complete", expanded=False)
+                                status.write(ui_stage(stage))
+                            status.update(label=ui_text("Query finished", "✅"), state="complete", expanded=False)
                     else:
                         result = execute_approved_question(
                             api_base_url,
@@ -272,34 +288,34 @@ def main() -> None:
                     st.session_state["latest_result"] = result
                     st.session_state["pending_approval"] = None
             except requests.RequestException as exc:
-                st.error(f"Query failed: {exc}")
+                st.error(f"{ui_text('Query failed:', '❌')} {exc}")
 
     preview = st.session_state.get("latest_preview")
     if preview:
-        st.subheader("Preview")
-        st.write(f"Status: {preview.get('status', 'unknown')}")
+        st.subheader(ui_text("Preview", "🔍"))
+        st.write(f"{ui_text('Status:', '📌')} {preview.get('status', 'unknown')}")
         sql_text = preview.get("safe_sql") or preview.get("generated_sql")
         if sql_text:
             st.code(sql_text, language="sql")
         reason = preview.get("reason")
         if reason:
-            st.warning(reason)
+            st.warning(f"{ui_text('', '⚠️')}{' ' if ICON_STYLE == 'expressive' else ''}{reason}")
 
         plan_warnings = preview.get("plan_warnings", [])
         if plan_warnings:
-            st.warning("EXPLAIN warnings:\n- " + "\n- ".join(plan_warnings))
+            st.warning(ui_text("EXPLAIN warnings:", "⚠️") + "\n- " + "\n- ".join(plan_warnings))
         elif preview.get("status") == "ready":
-            st.info("No EXPLAIN plan warnings detected.")
+            st.info(ui_text("No EXPLAIN plan warnings detected.", "✅"))
 
         plan_rows = preview.get("plan_rows", [])
         if plan_rows:
-            st.caption("Execution plan rows")
+            st.caption(ui_text("Execution plan rows", "🧭"))
             st.dataframe(plan_rows, use_container_width=True)
 
     pending = st.session_state.get("pending_approval")
     if pending:
-        st.info("This query is waiting for approval.")
-        if st.button("Approve and Execute", type="secondary", use_container_width=True):
+        st.info(ui_text("This query is waiting for approval.", "🕒"))
+        if st.button(ui_text("Approve and Execute", "✅"), type="secondary", use_container_width=True):
             try:
                 result = execute_approved_question(
                     api_base_url,
@@ -309,24 +325,24 @@ def main() -> None:
                     pending.get("database_name", selected_database),
                 )
             except requests.RequestException as exc:
-                st.error(f"Approved execution failed: {exc}")
+                st.error(f"{ui_text('Approved execution failed:', '❌')} {exc}")
             else:
                 st.session_state["latest_result"] = result
                 st.session_state["pending_approval"] = None
 
     result = st.session_state.get("latest_result")
     if result:
-        st.subheader("Result")
+        st.subheader(ui_text("Result", "📊"))
         status = result.get("status", "unknown")
-        st.write(f"Status: {status}")
+        st.write(f"{ui_text('Status:', '📌')} {status}")
 
         explanation = result.get("explanation")
         if explanation:
-            st.info(explanation)
+            st.info(f"{ui_text('', '🧾')}{' ' if ICON_STYLE == 'expressive' else ''}{explanation}")
 
         confidence = result.get("confidence")
         if confidence is not None:
-            st.write(f"Confidence: {confidence}")
+            st.write(f"{ui_text('Confidence:', '🎯')} {confidence}")
 
         sql_text = result.get("safe_sql") or result.get("generated_sql")
         if sql_text:
@@ -334,11 +350,11 @@ def main() -> None:
 
         reason = result.get("reason")
         if reason:
-            st.warning(reason)
+            st.warning(f"{ui_text('', '⚠️')}{' ' if ICON_STYLE == 'expressive' else ''}{reason}")
 
         summary = result.get("summary")
         if summary:
-            st.success(summary)
+            st.success(f"{ui_text('', '✅')}{' ' if ICON_STYLE == 'expressive' else ''}{summary}")
 
         columns = result.get("columns", [])
         rows = result.get("rows", [])
@@ -346,7 +362,7 @@ def main() -> None:
         if columns and rows:
             csv_text = to_csv_text(columns, rows)
             st.download_button(
-                label="Download Result CSV",
+                label=ui_text("Download Result CSV", "⬇️"),
                 data=csv_text,
                 file_name="text2sql_result.csv",
                 mime="text/csv",
@@ -356,23 +372,23 @@ def main() -> None:
     col_left, col_right = st.columns(2)
 
     with col_left:
-        st.subheader("Recent History")
+        st.subheader(ui_text("Recent History", "🕘"))
         try:
             history_rows = fetch_history(api_base_url, user_id, limit=history_limit)
         except requests.RequestException as exc:
-            st.error(f"Could not fetch history: {exc}")
+            st.error(f"{ui_text('Could not fetch history:', '❌')} {exc}")
         else:
             if not history_rows:
-                st.info("No history entries yet.")
+                st.info(ui_text("No history entries yet.", "ℹ️"))
             else:
                 st.dataframe(history_rows, use_container_width=True)
 
     with col_right:
-        st.subheader("Allowed Schema")
+        st.subheader(ui_text("Allowed Schema", "📚"))
         try:
             schema = fetch_schema(api_base_url)
         except requests.RequestException as exc:
-            st.error(f"Could not fetch schema: {exc}")
+            st.error(f"{ui_text('Could not fetch schema:', '❌')} {exc}")
         else:
             st.json(schema)
 
