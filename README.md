@@ -183,6 +183,24 @@ Or run both FastAPI and Streamlit together in one command:
 poetry run start-dev
 ```
 
+### Visual walkthrough
+
+![Text2SQL Quick Walkthrough](docs/assets/how-to-use.svg)
+
+### Short demo video (optional)
+
+Add a short demo clip at `docs/assets/demo.mp4` and reference it here:
+
+- [Watch 60-second product walkthrough](docs/assets/demo.mp4)
+
+Suggested demo flow:
+
+1. Run `poetry run start-dev`
+2. Open Streamlit and enter a question
+3. Show progress stages and SQL preview
+4. Approve query and show EXPLAIN warning panel
+5. Download results with the CSV button
+
 Optional API URL override:
 
 ```bash
@@ -195,6 +213,13 @@ The Streamlit app uses streaming progress updates from `POST /query/stream` and 
 - validating
 - executing
 - formatting
+
+Additional Streamlit features:
+
+- query approval toggle (preview first, explicit approve before execution)
+- EXPLAIN plan warnings from `POST /query/preview`
+- saved query presets (stored locally in `.saved_queries.json`)
+- CSV download button for result sets
 
 ### Multi-database connectors
 

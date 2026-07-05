@@ -20,6 +20,10 @@ class QueryRequest(BaseModel):
     database_name: str | None = None
 
 
+class QueryApprovalRequest(QueryRequest):
+    safe_sql: str
+
+
 class QueryResponse(BaseModel):
     question: str
     status: str
@@ -83,6 +87,38 @@ async def query_route(request: QueryRequest):
 
     service = get_service()
     outcome = service.answer(request.question, user_id=request.user_id, database_name=request.database_name)
+
+    return QueryResponse(
+        question=outcome.question,
+        status=outcome.status,
+        generated_sql=outcome.generated_sql,
+        safe_sql=outcome.safe_sql,
+        reason=outcome.reason,
+        columns=outcome.columns,
+        rows=outcome.rows,
+        row_count=outcome.row_count,
+        truncated=outcome.truncated,
+        execution_time_ms=outcome.execution_time_ms,
+        summary=outcome.summary,
+        explanation=outcome.explanation,
+        confidence=outcome.confidence,
+    )
+
+
+@router.post("/query/approved", response_model=QueryResponse)
+async def query_approved_route(request: QueryApprovalRequest):
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be empty")
+    if not request.safe_sql or not request.safe_sql.strip():
+        raise HTTPException(status_code=400, detail="safe_sql must not be empty")
+
+    service = get_service()
+    outcome = service.execute_approved(
+        question=request.question,
+        safe_sql=request.safe_sql,
+        user_id=request.user_id,
+        database_name=request.database_name,
+    )
 
     return QueryResponse(
         question=outcome.question,

@@ -401,6 +401,125 @@ class TextToSQLService:
             plan_warnings=explain.warnings,
         )
 
+    def execute_approved(
+        self,
+        question: str,
+        safe_sql: str,
+        user_id: Optional[str] = None,
+        database_name: Optional[str] = None,
+    ) -> QueryOutcome:
+        self._record_metric("queries_total")
+        normalized_user = self._normalize_user_id(user_id)
+        resolved_db_path = self._resolve_database_path(database_name)
+
+        schema = self.get_allowed_schema(resolved_db_path)
+        try:
+            validated = validate_sql(
+                safe_sql,
+                allowed_schema=schema,
+                max_rows=self.max_result_rows,
+                default_rows=self.default_row_limit,
+                row_filters=self.row_filters,
+            )
+        except SQLValidationError as e:
+            self._record_metric("validation_failures")
+            self._record_metric("queries_blocked")
+            explanation = self._build_explanation("blocked", safe_sql, None, str(e))
+            confidence = self._build_confidence("blocked", safe_sql, None)
+            self.audit_logger.record(
+                question=question,
+                generated_sql=safe_sql,
+                safe_sql=None,
+                status="blocked",
+                reason=str(e),
+                user_id=normalized_user,
+                database_name=database_name,
+            )
+            return QueryOutcome(
+                question=question,
+                status="blocked",
+                generated_sql=safe_sql,
+                reason=str(e),
+                explanation=explanation,
+                confidence=confidence,
+            )
+
+        try:
+            exec_result = execute_readonly(
+                resolved_db_path,
+                validated.safe_sql,
+                max_rows=self.max_result_rows,
+                timeout_seconds=self.query_timeout_seconds,
+            )
+        except QueryExecutionError as e:
+            self._record_metric("execution_failures")
+            self._record_metric("queries_error")
+            explanation = self._build_explanation("error", safe_sql, validated.safe_sql, str(e))
+            confidence = self._build_confidence("error", safe_sql, validated.safe_sql)
+            self.audit_logger.record(
+                question=question,
+                generated_sql=safe_sql,
+                safe_sql=validated.safe_sql,
+                status="error",
+                reason=str(e),
+                user_id=normalized_user,
+                database_name=database_name,
+            )
+            return QueryOutcome(
+                question=question,
+                status="error",
+                generated_sql=safe_sql,
+                safe_sql=validated.safe_sql,
+                reason=str(e),
+                explanation=explanation,
+                confidence=confidence,
+            )
+
+        redacted_rows = self._redact_rows(exec_result.rows)
+        summary = self._summarize_result(exec_result.columns, redacted_rows, exec_result.row_count)
+        self._record_metric("queries_success")
+        self.audit_logger.record(
+            question=question,
+            generated_sql=safe_sql,
+            safe_sql=validated.safe_sql,
+            status="success",
+            row_count=exec_result.row_count,
+            execution_time_ms=exec_result.execution_time_ms,
+            user_id=normalized_user,
+            database_name=database_name,
+        )
+
+        explanation = self._build_explanation("success", safe_sql, validated.safe_sql, None)
+        confidence = self._build_confidence("success", safe_sql, validated.safe_sql)
+        outcome = QueryOutcome(
+            question=question,
+            status="success",
+            generated_sql=safe_sql,
+            safe_sql=validated.safe_sql,
+            columns=exec_result.columns,
+            rows=redacted_rows,
+            row_count=exec_result.row_count,
+            truncated=exec_result.truncated,
+            execution_time_ms=exec_result.execution_time_ms,
+            summary=summary,
+            explanation=explanation,
+            confidence=confidence,
+        )
+
+        entry = {
+            "question": question,
+            "status": outcome.status,
+            "generated_sql": outcome.generated_sql,
+            "safe_sql": outcome.safe_sql,
+            "summary": outcome.summary,
+            "explanation": outcome.explanation,
+            "confidence": outcome.confidence,
+            "user_id": normalized_user,
+            "database_name": database_name,
+        }
+        self._append_history_entry(normalized_user, entry)
+        return outcome
+
     def answer(
         self,
         question: str,
