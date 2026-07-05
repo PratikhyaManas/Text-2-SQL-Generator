@@ -183,10 +183,6 @@ Or run both FastAPI and Streamlit together in one command:
 poetry run start-dev
 ```
 
-### Visual walkthrough
-
-![Text2SQL Quick Walkthrough](docs/assets/how-to-use.svg)
-
 ### Streamlit UI preview
 
 ![Streamlit UI Preview](docs/assets/ui-preview-live.png)
