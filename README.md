@@ -189,7 +189,7 @@ poetry run start-dev
 
 ### Streamlit UI preview
 
-![Streamlit UI Preview](docs/assets/ui-preview.svg)
+![Streamlit UI Preview](docs/assets/ui-preview.png)
 
 Suggested demo flow:
 
