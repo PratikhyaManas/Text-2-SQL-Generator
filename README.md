@@ -160,6 +160,55 @@ The app also serves a lightweight browser UI at `/ui` with:
 - saved session state in the browser
 - copy SQL and recent history view
 
+### Streamlit frontend (separate UI)
+
+A standalone Streamlit frontend is available in `streamlit_app.py`.
+It calls the existing backend endpoints (`/query`, `/history`, `/schema`, `/databases`) so the secure validation and execution pipeline remains unchanged.
+
+Start FastAPI first:
+
+```bash
+poetry run python src/main.py
+```
+
+Then run Streamlit in another terminal:
+
+```bash
+poetry run streamlit run streamlit_app.py
+```
+
+Or run both FastAPI and Streamlit together in one command:
+
+```bash
+poetry run start-dev
+```
+
+Optional API URL override:
+
+```bash
+export TEXT2SQL_API_BASE_URL=http://localhost:8000
+```
+
+The Streamlit app uses streaming progress updates from `POST /query/stream` and displays stages:
+
+- generating
+- validating
+- executing
+- formatting
+
+### Multi-database connectors
+
+The backend now supports SQLite, PostgreSQL, and MySQL targets while preserving the same SQL validator and policy checks before execution.
+
+Set `db_path` (or values inside `database_paths`) to one of:
+
+- SQLite file path: `data/sample.db`
+- SQLite URL: `sqlite:///data/sample.db`
+- PostgreSQL URL: `postgresql://user:password@host:5432/database`
+- MySQL URL: `mysql://user:password@host:3306/database`
+
+You can still use `/databases` plus `database_name` in requests to switch among configured targets.
+
 ## Deployment and operations
 
 ### Docker

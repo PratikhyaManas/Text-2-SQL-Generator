@@ -15,7 +15,9 @@ Even after validation, execution itself is hardened:
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List
+
+from src.db.connectors import DatabaseConnectorError, create_connection
 
 
 class QueryExecutionError(Exception):
@@ -35,6 +37,12 @@ class ExecutionResult:
     execution_time_ms: float
 
 
+@dataclass
+class ExplainResult:
+    plan_rows: List[List[Any]]
+    warnings: List[str]
+
+
 def execute_readonly(
     db_path: str,
     sql: str,
@@ -43,19 +51,30 @@ def execute_readonly(
 ) -> ExecutionResult:
     start = time.monotonic()
 
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        conn, backend = create_connection(db_path)
+    except DatabaseConnectorError as exc:
+        raise QueryExecutionError(str(exc)) from exc
 
-    # Abort the query if it runs too long. SQLite calls this handler
-    # periodically during execution; returning non-zero cancels the query.
     deadline = start + timeout_seconds
 
-    def _progress_handler() -> int:
-        return 1 if time.monotonic() > deadline else 0
+    if backend == "sqlite":
+        # Abort the query if it runs too long. SQLite calls this handler
+        # periodically during execution; returning non-zero cancels the query.
+        def _progress_handler() -> int:
+            return 1 if time.monotonic() > deadline else 0
 
-    conn.set_progress_handler(_progress_handler, 1000)
+        conn.set_progress_handler(_progress_handler, 1000)
 
     try:
         cursor = conn.cursor()
+        if backend == "postgresql":
+            cursor.execute("SET default_transaction_read_only = on")
+            cursor.execute(f"SET statement_timeout = {int(timeout_seconds * 1000)}")
+        elif backend == "mysql":
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+            cursor.execute(f"SET SESSION MAX_EXECUTION_TIME = {int(timeout_seconds * 1000)}")
+
         cursor.execute(sql)
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
 
@@ -78,6 +97,55 @@ def execute_readonly(
             )
         raise QueryExecutionError(str(e))
     except sqlite3.Error as e:
+        raise QueryExecutionError(str(e))
+    except Exception as e:
+        message = str(e).lower()
+        if "timeout" in message or "statement timeout" in message or "max_execution_time" in message:
+            raise QueryTimeoutError(f"Query exceeded {timeout_seconds}s timeout and was aborted")
+        raise QueryExecutionError(str(e))
+    finally:
+        conn.close()
+
+
+def explain_readonly(
+    db_path: str,
+    sql: str,
+    timeout_seconds: int = 5,
+) -> ExplainResult:
+    try:
+        conn, backend = create_connection(db_path)
+    except DatabaseConnectorError as exc:
+        raise QueryExecutionError(str(exc)) from exc
+
+    try:
+        cursor = conn.cursor()
+        if backend == "postgresql":
+            cursor.execute("SET default_transaction_read_only = on")
+            cursor.execute(f"SET statement_timeout = {int(timeout_seconds * 1000)}")
+            cursor.execute(f"EXPLAIN {sql}")
+            rows = [list(row) for row in cursor.fetchall()]
+            plan_text = " ".join(str(cell) for row in rows for cell in row).lower()
+        elif backend == "mysql":
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+            cursor.execute(f"SET SESSION MAX_EXECUTION_TIME = {int(timeout_seconds * 1000)}")
+            cursor.execute(f"EXPLAIN {sql}")
+            rows = [list(row) for row in cursor.fetchall()]
+            plan_text = " ".join(str(cell) for row in rows for cell in row).lower()
+        else:
+            cursor.execute(f"EXPLAIN QUERY PLAN {sql}")
+            rows = [list(row) for row in cursor.fetchall()]
+            plan_text = " ".join(str(cell) for row in rows for cell in row).lower()
+
+        warnings: List[str] = []
+        if "scan" in plan_text and "index" not in plan_text:
+            warnings.append("Query plan indicates a table scan without index usage.")
+        if "temporary" in plan_text:
+            warnings.append("Query plan uses temporary structures; review performance for large datasets.")
+        if "filesort" in plan_text:
+            warnings.append("Query plan uses filesort; consider indexing ORDER BY columns.")
+
+        return ExplainResult(plan_rows=rows, warnings=warnings)
+    except Exception as e:
         raise QueryExecutionError(str(e))
     finally:
         conn.close()

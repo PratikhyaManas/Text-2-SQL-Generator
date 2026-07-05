@@ -1,10 +1,15 @@
 """FastAPI routes: thin HTTP layer over the TextToSQLService."""
 
+import asyncio
+import json
+import threading
+from dataclasses import asdict
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from src.core.logger import logger
+from src.core.config import settings
 
 router = APIRouter()
 
@@ -21,14 +26,24 @@ class QueryResponse(BaseModel):
     generated_sql: str | None = None
     safe_sql: str | None = None
     reason: str | None = None
-    columns: list[str] = []
-    rows: list[list] = []
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
     execution_time_ms: float | None = None
     summary: str | None = None
     explanation: str | None = None
     confidence: float | None = None
+
+
+class QueryPreviewResponse(BaseModel):
+    question: str
+    status: str
+    generated_sql: str | None = None
+    safe_sql: str | None = None
+    reason: str | None = None
+    plan_rows: list[list] = Field(default_factory=list)
+    plan_warnings: list[str] = Field(default_factory=list)
 
 
 def get_service():
@@ -45,7 +60,7 @@ async def health_check():
         "status": "ok",
         "service": "text2sql-secure",
         "version": "0.1.0",
-        "environment": "development",
+        "environment": settings.environment,
     }
 
 
@@ -86,6 +101,70 @@ async def query_route(request: QueryRequest):
     )
 
 
+@router.post("/query/preview", response_model=QueryPreviewResponse)
+async def query_preview_route(request: QueryRequest):
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be empty")
+
+    service = get_service()
+    preview = service.preview(request.question, user_id=request.user_id, database_name=request.database_name)
+
+    return QueryPreviewResponse(
+        question=preview.question,
+        status=preview.status,
+        generated_sql=preview.generated_sql,
+        safe_sql=preview.safe_sql,
+        reason=preview.reason,
+        plan_rows=preview.plan_rows,
+        plan_warnings=preview.plan_warnings,
+    )
+
+
+@router.post("/query/stream")
+async def query_stream_route(request: QueryRequest):
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="question must not be empty")
+
+    service = get_service()
+    loop = asyncio.get_running_loop()
+    events: asyncio.Queue[dict] = asyncio.Queue()
+
+    def emit(stage: str, details: dict):
+        payload = {"type": "progress", "stage": stage, "details": details}
+        loop.call_soon_threadsafe(events.put_nowait, payload)
+
+    def run_query() -> None:
+        try:
+            outcome = service.answer(
+                request.question,
+                user_id=request.user_id,
+                database_name=request.database_name,
+                progress_callback=emit,
+            )
+            loop.call_soon_threadsafe(
+                events.put_nowait,
+                {"type": "result", "data": asdict(outcome)},
+            )
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            loop.call_soon_threadsafe(
+                events.put_nowait,
+                {"type": "error", "message": str(exc)},
+            )
+        finally:
+            loop.call_soon_threadsafe(events.put_nowait, {"type": "done"})
+
+    threading.Thread(target=run_query, daemon=True).start()
+
+    async def generator():
+        while True:
+            event = await events.get()
+            yield f"data: {json.dumps(event)}\n\n"
+            if event.get("type") == "done":
+                break
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
 @router.get("/audit")
 async def audit_route(limit: int = Query(default=20, ge=1, le=200)):
     service = get_service()
@@ -101,7 +180,7 @@ async def metrics_route():
 @router.get("/metrics-text")
 async def metrics_text_route():
     service = get_service()
-    return {"status": "ok", "content": service.get_metrics_text()}
+    return Response(content=service.get_metrics_text(), media_type="text/plain; version=0.0.4")
 
 
 @router.get("/history")
@@ -163,6 +242,7 @@ async def ui_route():
                     <button type='submit'>Ask</button>
                 </form>
                 <div style='margin-top:1rem;display:grid;gap:1rem;'>
+                    <div><strong>Progress</strong><pre id='progress'></pre></div>
                     <div><strong>Explanation</strong><pre id='explanation'></pre></div>
                     <div><strong>Confidence</strong><pre id='confidence'></pre></div>
                     <div>
@@ -245,12 +325,45 @@ async def ui_route():
                     const userId = userSelect.value.trim() || 'demo';
                     const databaseName = databaseSelect.value || 'default';
                     saveSession(userId, databaseName);
-                    const response = await fetch('/query', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question, user_id: userId, database_name: databaseName})});
-                    const data = await response.json();
-                    document.getElementById('explanation').textContent = data.explanation || '';
-                    document.getElementById('confidence').textContent = data.confidence ?? 'n/a';
-                    document.getElementById('sql').textContent = data.safe_sql || data.generated_sql || '';
-                    document.getElementById('result').textContent = JSON.stringify({status: data.status, rows: data.rows, rowCount: data.row_count, summary: data.summary}, null, 2);
+                    const progressEl = document.getElementById('progress');
+                    progressEl.textContent = 'starting...';
+
+                    const response = await fetch('/query/stream', {
+                        method:'POST',
+                        headers:{'Content-Type':'application/json', 'Accept': 'text/event-stream'},
+                        body: JSON.stringify({question, user_id: userId, database_name: databaseName})
+                    });
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, {stream: true});
+
+                        const events = buffer.split('\n\n');
+                        buffer = events.pop() || '';
+                        for (const event of events) {
+                            const line = event.split('\n').find((entry) => entry.startsWith('data: '));
+                            if (!line) continue;
+                            const payload = JSON.parse(line.slice(6));
+                            if (payload.type === 'progress') {
+                                const stage = payload.stage || 'working';
+                                progressEl.textContent += `\n${stage}`;
+                            }
+                            if (payload.type === 'result') {
+                                const data = payload.data || {};
+                                document.getElementById('explanation').textContent = data.explanation || '';
+                                document.getElementById('confidence').textContent = data.confidence ?? 'n/a';
+                                document.getElementById('sql').textContent = data.safe_sql || data.generated_sql || '';
+                                document.getElementById('result').textContent = JSON.stringify({status: data.status, rows: data.rows, rowCount: data.row_count, summary: data.summary}, null, 2);
+                            }
+                            if (payload.type === 'error') {
+                                progressEl.textContent += `\nerror: ${payload.message || 'unexpected error'}`;
+                            }
+                        }
+                    }
                     await refreshHistory();
                 };
 

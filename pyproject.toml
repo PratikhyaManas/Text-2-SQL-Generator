@@ -12,6 +12,9 @@ dependencies = [
     "pyyaml>=6.0.1",
     "sqlglot>=25.0.0",
     "requests>=2.31.0",
+    "streamlit>=1.36.0",
+    "psycopg[binary]>=3.2.0",
+    "pymysql>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +26,7 @@ dev = [
 
 [project.scripts]
 start-server = "src.main:main"
+start-dev = "src.dev_runner:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -50,6 +54,9 @@ pydantic-settings = ">=2.2.0"
 pyyaml = ">=6.0.1"
 sqlglot = ">=25.0.0"
 requests = ">=2.31.0"
+streamlit = ">=1.36.0"
+psycopg = { extras = ["binary"], version = ">=3.2.0" }
+pymysql = ">=1.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0.0"
@@ -58,3 +65,4 @@ bandit = {extras = ["toml"], version = ">=1.7.9"}
 
 [tool.poetry.scripts]
 start-server = "src.main:main"
+start-dev = "src.dev_runner:main"

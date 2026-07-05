@@ -49,7 +49,11 @@ class Settings(BaseSettings):
 
     # --- Audit ---
     audit_log_path: str = "logs/audit.jsonl"
-    log_level: str = "INFO"
+
+    # --- In-memory limits ---
+    max_cache_entries: int = 512
+    max_history_entries: int = 1000
+    max_rate_limit_users: int = 1000
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -67,12 +71,36 @@ def _load_yaml_config(path: str) -> Dict[str, Any]:
         return {}
 
 
-def load_config() -> Settings:
-    settings = Settings()
+def _load_dotenv_values(path: str) -> Dict[str, str]:
+    if not os.path.exists(path):
+        return {}
 
-    yaml_config = _load_yaml_config("configs/config.yaml")
+    values: Dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip("\"'")
+    except Exception:
+        return {}
+    return values
+
+
+def load_config(yaml_path: str = "configs/config.yaml", env_path: str = ".env") -> Settings:
+    settings = Settings(_env_file=env_path)
+
+    # Precedence target: defaults -> yaml -> .env -> environment.
+    # `Settings()` already resolved defaults + .env + environment, so we only
+    # apply YAML values for fields that were not set by .env/environment.
+    yaml_config = _load_yaml_config(yaml_path)
+    dotenv_values = _load_dotenv_values(env_path)
+
     for key, value in yaml_config.items():
-        if hasattr(settings, key):
+        env_key = key.upper()
+        if hasattr(settings, key) and env_key not in os.environ and env_key not in dotenv_values:
             setattr(settings, key, value)
 
     return settings
