@@ -193,6 +193,15 @@ Add a short demo clip at `docs/assets/demo.mp4` and reference it here:
 
 - [Watch 60-second product walkthrough](docs/assets/demo.mp4)
 
+#### 60-second storyboard script
+
+- **0s-8s**: Show terminal and run `poetry run start-dev`; say "This starts both the secure API and Streamlit frontend."
+- **8s-18s**: Open Streamlit, pick user and database; say "The app supports role-based usage and multiple database targets."
+- **18s-30s**: Enter a question and click **Run Query**; say "Natural language is converted to SQL with visible progress stages."
+- **30s-42s**: Show SQL preview and EXPLAIN warnings; say "Before execution, SQL is validated and we surface execution-plan warnings."
+- **42s-52s**: Click **Approve and Execute**; say "Approval mode ensures only reviewed SQL runs."
+- **52s-60s**: Show result table and click **Download Result CSV**; say "You can export results instantly and keep an auditable workflow."
+
 Suggested demo flow:
 
 1. Run `poetry run start-dev`

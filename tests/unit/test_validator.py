@@ -119,3 +119,15 @@ def test_row_filter_is_injected_when_requested():
     )
     assert "WHERE" in result.safe_sql.upper()
     assert "TENANT_ID = 1" in result.safe_sql.upper()
+
+
+def test_select_alias_in_order_by_is_allowed():
+    result = validate_sql(
+        "SELECT p.name, SUM(oi.quantity) AS total_sold "
+        "FROM order_items oi "
+        "JOIN products p ON p.product_id = oi.product_id "
+        "GROUP BY p.name "
+        "ORDER BY total_sold DESC LIMIT 5",
+        SCHEMA,
+    )
+    assert "ORDER BY TOTAL_SOLD DESC" in result.safe_sql.upper()

@@ -117,6 +117,8 @@ def _ensure_columns_allowed(statement: exp.Expression, allowed_schema: Dict[str,
         table.lower(): {column.lower() for column in columns}
         for table, columns in allowed_schema.items()
     }
+
+    table_names = {table.name.lower() for table in statement.find_all(exp.Table)}
     alias_map = {}
     for table in statement.find_all(exp.Table):
         table_name = table.name.lower()
@@ -124,22 +126,34 @@ def _ensure_columns_allowed(statement: exp.Expression, allowed_schema: Dict[str,
         if table.alias:
             alias_map[table.alias.lower()] = table_name
 
+    # Allow references like ORDER BY total_sold where total_sold is a
+    # SELECT-list alias. Underlying source columns are still validated.
+    select_aliases = set()
+    if isinstance(statement, exp.Select):
+        for projection in statement.expressions:
+            if isinstance(projection, exp.Alias) and projection.alias:
+                select_aliases.add(projection.alias.lower())
+
     for column in statement.find_all(exp.Column):
-        if column.name.lower() == "*":
+        column_name = column.name.lower()
+        if column_name == "*":
+            continue
+
+        if not column.table and column_name in select_aliases:
             continue
 
         resolved_table = None
         if column.table:
             resolved_table = alias_map.get(column.table.lower())
-        elif len({table.name.lower() for table in statement.find_all(exp.Table)}) == 1:
-            resolved_table = next(iter({table.name.lower() for table in statement.find_all(exp.Table)}))
+        elif len(table_names) == 1:
+            resolved_table = next(iter(table_names))
 
         if resolved_table is None:
             raise SQLValidationError(
                 f"Could not resolve the table for column '{column.name}'"
             )
 
-        if column.name.lower() not in allowed_columns.get(resolved_table, set()):
+        if column_name not in allowed_columns.get(resolved_table, set()):
             raise SQLValidationError(
                 f"Column '{resolved_table}.{column.name}' is not allowed by the schema"
             )

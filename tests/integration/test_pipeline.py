@@ -63,6 +63,56 @@ def test_unknown_question_falls_back_to_safe_default(sample_db, tmp_path):
     assert outcome.columns  # got some product columns back
 
 
+def test_top_products_query_succeeds_end_to_end(sample_db, tmp_path):
+    top_db = str(tmp_path / "top_products.db")
+    conn = sqlite3.connect(top_db)
+    conn.executescript(
+        """
+        CREATE TABLE products (
+            product_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            price REAL NOT NULL
+        );
+        CREATE TABLE order_items (
+            order_item_id INTEGER PRIMARY KEY,
+            order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO products VALUES (?, ?, ?)",
+        [
+            (1, "Notebook", 10.0),
+            (2, "Mouse", 20.0),
+            (3, "Keyboard", 30.0),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO order_items VALUES (?, ?, ?, ?)",
+        [
+            (1, 100, 1, 5),
+            (2, 101, 2, 3),
+            (3, 102, 3, 2),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    service = make_service(top_db, str(tmp_path / "audit.jsonl"))
+
+    outcome = service.answer("top 3 products", user_id="integration-top-products")
+
+    assert outcome.status == "success"
+    assert outcome.safe_sql is not None
+    assert "total_sold" in outcome.safe_sql.lower()
+    assert outcome.columns == ["name", "total_sold"]
+    assert outcome.row_count > 0
+    totals = [row[1] for row in outcome.rows]
+    assert totals == sorted(totals, reverse=True)
+
+
 def test_database_selection_uses_requested_database(sample_db, tmp_path):
     alt_db = str(tmp_path / "alt.db")
     conn = sqlite3.connect(alt_db)
